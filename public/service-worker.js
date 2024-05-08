@@ -18,7 +18,7 @@ function checkCacheSize(cacheName) {
         cache.keys().then(keys => {
             if (keys.length > MAX_ITEMS_IN_CACHE) {
                 cache.delete(keys[0]).then(() => {
-                    checkCacheSize(cacheName); // Recurse until the cache size is within limits
+                    checkCacheSize(cacheName);  // Recurse until the cache size is within limits
                 });
             }
         });
@@ -26,10 +26,19 @@ function checkCacheSize(cacheName) {
 }
 
 self.addEventListener('message', event => {
-    if (event.data.type === 'CHECK_SW') {
-        console.log('Received message in service worker: ', event.data.msg);
-        // Respond back to the message
-        event.ports[0].postMessage({msg: 'Yes, I am here and active.'});
+    console.log('Received message in service worker:', event.data);
+    // Handle different types of messages
+    switch (event.data.type) {
+        case 'CHECK_SW':
+            // Respond back to the message
+            console.log('Service worker is active and received CHECK_SW message:', event.data.msg);
+            event.ports[0].postMessage({msg: 'Yes, I am here and active.'});
+            break;
+        case 'PAGE_LOADED':
+            console.log('Page loaded message received:', event.data.msg);
+            break;
+        default:
+            console.log('Unhandled message type:', event.data.type);
     }
 });
 
@@ -87,7 +96,6 @@ function limitCacheSize(cacheName, maxItems) {
         });
     });
 }
-
 
 // Fetch event logic to cache comic images dynamically when they are requested
 self.addEventListener('fetch', event => {
