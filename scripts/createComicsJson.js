@@ -1,24 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 const { createWorker } = require('tesseract.js');
-const axios = require('axios');
+const axiosBase = require('axios');
+const { setupCache } = require('axios-cache-interceptor');
+
+// Setup Axios with caching
+const axios = setupCache(axiosBase, {
+    ttl: 15 * 60 * 1000, // Cache for 15 minutes
+});
+
+const levenshtein = require('fast-levenshtein');
 
 const comicsDirectory = path.resolve('public/Dilbert');
 const comicsOutputFile = 'comics.json';
-const repeatedWords = ['the', 'and', 'a', 'an', 'of', 'to', 'in', 'that', 'is', 'for', 'it', 'with', 'as', 'on', 'at', 'by'];
-const dictionary = {
-  'teh': 'the',
-  'accomodate': 'accommodate',
-  'seperation': 'separation',
-  // add more corrections as needed
-};
+const debug = false; // Set to true for debugging, false for general running
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function processText(text) {
-    console.log(`Processing text: ${text}`); // Output the text that's being processed
+    if (debug) console.log(`Processing text: ${text}`); // Output the text that's being processed
 
     const words = text
     .split(/\s+/) // Split the text into words based on one or more whitespace characters
@@ -29,10 +31,10 @@ async function processText(text) {
     const processedWords = [];
 
     for (let word of words) {
-      console.log(`Processing word: ${word}`); // Output the word that's being processed
+        if (debug) console.log(`Processing word: ${word}`); // Output the word that's being processed
 
       let processedWord = await getSignificantWord(word);
-      console.log(`Processed word: ${processedWord}`); // Output the processed word
+      if (debug) console.log(`Processed word result: ${processedWord}`); // Output the processed word
 
       if (processedWord) {
         processedWords.push(processedWord);
@@ -41,47 +43,58 @@ async function processText(text) {
       await delay(200); // Delay of 200 milliseconds between requests
     }
 
-    console.log(`Processed words: ${processedWords}`); // Output the array of processed words
+    if (debug) console.log(`Processed words: ${processedWords}`); // Output the array of processed words
 
     const result = processedWords.join(' ');
-    console.log(`Result: ${result}`); // Output the final result
+    if (debug) console.log(`Result: ${result}`); // Output the final result
 
     return result;
 }
   
 async function getSignificantWord(word, depth = 0) {
-    if (depth > 2) { // Limit the recursion to avoid too many API calls
+    // Base case to prevent infinite recursion
+    if (depth > 2) {
         console.log(`Depth limit reached for word: ${word}`);
-        return null;
+        return word;
     }
 
-    console.log(`Checking word: ${word}`);
+    let response = await axios.get(`https://api.datamuse.com/words?sp=${word}&md=d`);
+    if (debug) console.log(`Response for word check: ${JSON.stringify(response.data)}`);
 
-    // Check the significance of the word using detailed metadata
-    let response = await axios.get(`https://api.datamuse.com/words?sp=${word}&md=d&max=1`);
-    console.log(`Response for word check: ${JSON.stringify(response.data)}`);
-
+    // Check if the first response is significant
     if (response.data.length && response.data[0].defs) {
         const definitions = response.data[0].defs.filter(def => def.startsWith('n\t')); // Filter for noun definitions
         if (definitions.length) {
-            console.log(`Word is significant and correct: ${word}`);
-            return word;
+            var correctedWord = response.data[0].word;
+            if (debug) console.log(`Word is significant and correct: ${correctedWord}`);
+            return correctedWord;
+        }
+        else {
+            if (debug) console.log(`Word is significant but not a noun: ${word}`);
+            return null;
         }
     }
 
     // If the initial word isn't significant or clear, try suggesting a correction
     response = await axios.get(`https://api.datamuse.com/sug?s=${word}`);
-    console.log(`Response for word suggestion: ${JSON.stringify(response.data)}`);
+    if (debug) console.log(`Response for word suggestion: ${JSON.stringify(response.data)}`);
 
-    if (response.data.length && response.data[0].word !== word) {
+    if (response.data.length) {
         const suggestedWord = response.data[0].word;
-        console.log(`Suggested word: ${suggestedWord}`);
+        const distance = levenshtein.get(word.toLowerCase(), suggestedWord.toLowerCase());
+        if (debug) console.log(`Suggested word: ${suggestedWord} with distance: ${distance}`);
 
-        // Recursively check the suggested word for significance
-        return getSignificantWord(suggestedWord, depth + 1);
+        // if suggested word is the same as the original word, return the original word
+        if (distance === 0) {
+            return suggestedWord;
+        }
+        
+        if (distance <= 1) {
+            return getSignificantWord(suggestedWord, depth + 1);
+        }
     }
 
-    console.log(`No significant word found or suggestions are too similar for: ${word}`);
+    // Return empty if no suitable suggestion was found
     return null;
 }
 
@@ -108,23 +121,14 @@ async function createComicsJson(directory) {
             const text = result.data.text;
             const cleanedText = await processText(text);
 
-            // const cleanedText = text
-            //   .replace(/[^a-zA-Z\s]/g, '') // remove special characters
-            //   .trim() // remove leading and trailing whitespace
-            //   .replace(/\s+/g, ' ') // replace multiple spaces with a single space
-            //   .toLowerCase() // convert to lowercase
-            //   .split(' ') // split into individual words
-            //   .filter(word => word.length > 3 && !repeatedWords.includes(word)) // remove short and repeated words
-            //   .map(word => dictionary[word] || word) // perform spelling corrections
-            //   .join(' '); // rejoin into a single string
-
             console.log(`Text recognized: ${cleanedText}`);
-            if (text) {
+            if (cleanedText) {
               allComics.push({
                 name: entry.name,
                 path: fullPath,
-                text: text.trim()
+                text: cleanedText.trim()
               });
+              fs.writeFileSync(comicsOutputFile, JSON.stringify(allComics, null, 2), 'utf8');
             } else {
               console.log(`No text recognized for image: ${fullPath}`);
             }
@@ -137,7 +141,6 @@ async function createComicsJson(directory) {
   
     let comics = [];
     await readDirectory(directory, comics);
-    fs.writeFileSync(comicsOutputFile, JSON.stringify(comics, null, 2), 'utf8');
     console.log("Comics json file has been created successfully at:", path.resolve(comicsOutputFile));
     await worker.terminate();
   }
