@@ -12,7 +12,7 @@ const axios = setupCache(axiosBase, {
 const levenshtein = require('fast-levenshtein');
 
 const comicsDirectory = path.resolve('public/Dilbert');
-const comicsOutputFile = 'comics.json';
+const comicsOutputFile = './src/comics.json';
 const debug = false; // Set to true for debugging, false for general running
 
 function delay(ms) {
@@ -102,7 +102,8 @@ async function createComicsJson(directory) {
     console.log("Scanning directory:", directory);
   
     const worker = await createWorker();
-  
+    const existingComics = JSON.parse(fs.readFileSync(comicsOutputFile, 'utf8'));
+
     async function readDirectory(dir, allComics) {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
   
@@ -111,8 +112,15 @@ async function createComicsJson(directory) {
           await readDirectory(path.join(dir, entry.name), allComics);
         } else if (entry.isFile() && entry.name.endsWith('.png')) {
           const fullPath = path.join(dir, entry.name);
+          const relativePath = path.join('Dilbert', path.relative(comicsDirectory, fullPath));
           console.log(`Processing image: ${fullPath}`);
           try {
+            const alreadyProcessed = existingComics.find(comic => comic.path === fullPath);
+            if (alreadyProcessed) {
+              console.log(`Image already processed: ${fullPath}`);
+              continue;
+            }
+            
             const result = await worker.recognize(fullPath, {
               lang: 'eng',
               logger: 'console'
@@ -122,12 +130,13 @@ async function createComicsJson(directory) {
             const cleanedText = await processText(text);
 
             console.log(`Text recognized: ${cleanedText}`);
+            console.log();
             if (cleanedText) {
-              allComics.push({
-                name: entry.name,
-                path: fullPath,
-                text: cleanedText.trim()
-              });
+                allComics.push({
+                    name: entry.name,
+                    path: relativePath,
+                    text: cleanedText.trim()
+                  });
               fs.writeFileSync(comicsOutputFile, JSON.stringify(allComics, null, 2), 'utf8');
             } else {
               console.log(`No text recognized for image: ${fullPath}`);
